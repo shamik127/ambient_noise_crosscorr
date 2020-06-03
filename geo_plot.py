@@ -3,6 +3,7 @@
 import os
 import sys
 import numpy as np
+import pandas as pd
 import obspy.core as oc
 import scipy.signal as ss
 import matplotlib.pyplot as plt
@@ -15,27 +16,30 @@ def snr(dt, cclags, ccmat, umin, umax):
 
     offsets = map(lambda x: x.stats.distance*1e-3, ccmat.traces)
     rsd = np.array(offsets)
-    
-    hlen = (len(cclags)-1)/2
 
     tstart = rsd/umax
     tend = rsd/umin
 
-    pb_iws = np.searchsorted(cclags,tstart)
-    pb_iwe = np.searchsorted(cclags,tend)
+    posbr_tl = cclags[len(cclags)//2:]
+    
+    pb_iws = np.searchsorted(posbr_tl,tstart)
+    pb_iwe = np.searchsorted(posbr_tl,tend)
 
     egy_win_pb = np.empty(len(ccmat.traces))
     egy_owin_pb = np.empty(len(ccmat.traces))
 
-
     for tn in range(len(ccmat.traces)):
-        cccopy = ccmat.traces[tn].data
-        pbwin = ccmat.traces[tn].data[pb_iws[tn]:pb_iwe[tn]+1]
+        posbr_cc = ccmat.traces[tn].data
+        #print(posbr_cc[0:50])
+        cccopy = posbr_cc.copy()
+        pbwin = posbr_cc[pb_iws[tn]:pb_iwe[tn]+1]
 
-        egy_win_pb[tn] = np.sum(np.square(pbwin))
+        egy_win_pb[tn] = np.mean(np.square(pbwin))
         cccopy[pb_iws[tn]:pb_iwe[tn]+1] = 0.0
-        egy_owin_pb[tn] = np.sum(np.square(cccopy))
+        egy_owin_pb[tn] = np.sum(np.square(cccopy))/( len(cccopy)- len(pbwin) )
 
+    
+    #print(egy_win_pb/egy_owin_pb)
     return np.mean(egy_win_pb/egy_owin_pb)
 
 
@@ -47,6 +51,11 @@ class do_one_brec:
         self.angles = angles
         self.rlist = rlist
         self.ccm = ccmat
+        self.nrec = len(rlist)
+
+        self.cum_arr = np.cumsum(np.arange( (self.nrec-1), 0, -1))
+        self.cum_arr = np.insert(self.cum_arr, 0, 0)
+        self.cum_arr = np.insert(self.cum_arr, -1, self.cum_arr[-1])
 
 
     def get_rec_coord(self, rec):
@@ -54,41 +63,43 @@ class do_one_brec:
         y = crd[crd[:,0] == rec, 3] 
         return x,y
 
-
     def getsection_with_azm(self,brec,azm):
         try:
             bri = list(self.rlist).index(brec)
         except ValueError:
             sys.exit('Could not find the base receiver.')
 
-        base_x, base_y = self.get_rec_coord(bri)
-
-        nrec = len(self.rlist)
-
-        cum_arr = np.cumsum(np.arange( (nrec-1), 0, -1))
-        cum_arr = np.insert(cum_arr, 0, 0)
-
-        rel_rec_idx = np.arange(cum_arr[bri], cum_arr[bri+1])
-
-        angs = self.angles[rel_rec_idx]
+        upperRecs = np.arange(self.cum_arr[bri], self.cum_arr[bri+1])
+        
+        lowerRecs = np.array([], dtype=np.int32)
+        for i in range(0,bri):
+            lowerRecs = np.insert(lowerRecs,0, (self.cum_arr[bri-(i+1)]+i))
 
 
-        ang_args = np.argwhere(np.abs(angs) < self.azbin/2)
+        
 
-        if azm==0 or azm==360:
-            set1=np.concatenate( (np.argwhere(np.abs(angs-azm) < self.azbin/2), np.argwhere(np.abs(360-angs-azm) < self.azbin/2)), axis=0)[:,0]
-        else:
-            set1=np.argwhere(np.abs(angs-azm) < self.azbin/2)[:,0]
+        # Base receiver angles with the upper receivers
+        upperAngs = self.angles[upperRecs]
 
-        set2=np.concatenate((np.argwhere(np.abs(angs-180-azm) < self.azbin/2), np.argwhere(np.abs(angs+180-azm) < self.azbin/2)), axis=0)[:,0]
+        # Base receiver angles with the lower receivers (the angles data contains angles corresponding to 
+        # lower to upper receiver)
+        lowerAngs = self.angles[lowerRecs] + 180
 
-        ang_mod_idx_set1 = rel_rec_idx[set1]
-        ang_mod_idx_set2 = rel_rec_idx[set2]
+        # index positions in the angs array needed for the given angle
+        upperAngIdsWithinBin = np.argwhere(np.abs(upperAngs-azm) < self.azbin/2.0).flatten()
+        lowerAngIdsWithinBin = np.argwhere(np.abs(lowerAngs-azm) < self.azbin/2.0).flatten()
 
-        trs1 = [oc.trace.Trace(data=self.ccm[:,x], header={'distance': self.distances[x]}) for x in ang_mod_idx_set1]
-        trs2 = [oc.trace.Trace(data=self.ccm[:,x], header={'distance': self.distances[x]}) for x in ang_mod_idx_set2]
+        upperRecsIdsWithinBin = upperRecs[upperAngIdsWithinBin]
+        lowerRecsIdsWithinBin = lowerRecs[lowerAngIdsWithinBin]
 
-        final_pnsep=oc.stream.Stream(traces=trs1) + oc.stream.Stream(traces=trs2)
+        #return np.append( (lowerAngIdsWithinBin + 1), (upperAngIdsWithinBin + (bri+2)) )
+        
+        ccml = self.ccm.shape[0]
+        upperTrs = [oc.trace.Trace(data=self.ccm[ccml//2+1:,x], header={'distance': self.distances[x]}) for x in upperRecsIdsWithinBin]
+        lowerTrs = [oc.trace.Trace(data=np.flip(self.ccm[0:ccml//2-1,x]), header={'distance': self.distances[x]}) for x in lowerRecsIdsWithinBin]
+
+        final_pnsep= oc.stream.Stream(traces=upperTrs) + oc.stream.Stream(traces=lowerTrs)
+        #print(len(final_pnsep.traces))
         egy = snr(si,cclags,final_pnsep,1.5,6.0)
         
         return egy
@@ -96,83 +107,91 @@ class do_one_brec:
 
 def stn_pair_distances(rlist):
     
+
     nrecs = len(rlist)
-    cordfl = np.genfromtxt('coordinates_receivers_recnum.csv')
 
     distances = np.array([])
     angles = np.array([])
 
-    for bidx in range(1, nrecs):
-        base_x = cordfl[cordfl[:,0] == bidx, 2]
-        base_y = cordfl[cordfl[:,0] == bidx, 3]
+    for bid in range(0, nrecs-1):
+    
+        base_x = crd.loc[bid].x
+        base_y = crd.loc[bid].y
 
-        for rec in range((bidx + 1), (nrecs+1)):
-            rec_x = cordfl[cordfl[:,0] == rec, 2]
-            rec_y = cordfl[cordfl[:,0] == rec, 3]
+        recs = np.arange( (bid+1), nrecs ) 
+
+        for rec in recs:
+            rec_x = crd.loc[rec].x
+            rec_y = crd.loc[rec].y
 
             dist = np.sqrt( (base_x - rec_x)**2 + (base_y - rec_y)**2 )
-            qang = np.arctan2(rec_x - base_x, rec_y - base_y)
+            qang = np.arctan2(rec_y - base_y, rec_x - base_x)
+            
+            if (qang < 0.0):
+                qang += 2*np.pi
 
-            qang[qang < 0.0] += 2*np.pi
             rpazim_d = qang*180/np.pi
-
+    
             distances = np.append(distances, dist)
             angles = np.append(angles, rpazim_d)
 
     return distances, angles
 
-"""
-class geo_plot:
-    def __init__(self):
-        buildingdf = np.genfromtxt('coordinates_rec_latlon_id_gcy.csv', delimiter='\t')
-        self.lat  = buildingdf[:,0]
-        self.lon  = buildingdf[:,1]
 
-        # determine range to print based on min, max lat and lon of the data
-        margin = 2 # buffer to add to the range
-        lat_min = min(self.lat) - margin
-        lat_max = max(self.lat) + margin
-        lon_min = min(self.lon) - margin
-        lon_max = max(self.lon) + margin
+def recpair_angles(rlist):
+    angles = {}
+
+    nrecs = len(rlist)
+
+    for bid in range(0, nrecs-1):
+        angles[bid+1] = {}
+        base_x = crd.loc[bid].x
+        base_y = crd.loc[bid].y
+
+        recs = np.arange(0, nrecs ) 
+        recs = np.delete(recs, bid)
+
+        for rec in recs:
+            rec_x = crd.loc[rec].x
+            rec_y = crd.loc[rec].y
+
+            qang = np.arctan2(rec_y - base_y, rec_x - base_x)
+            
+            if (qang < 0.0):
+                qang += 2*np.pi
+
+            rpazim_d = qang*180/np.pi
+            angles[bid+1][rec+1] = rpazim_d
+
+    return angles
+
+def recpair_distances(rlist):
+    distances = {}
+
+    nrecs = len(rlist)
+
+    for bid in range(0, nrecs-1):
+        distances[bid+1] = {}
+        base_x = crd.loc[bid].x
+        base_y = crd.loc[bid].y
+
+        recs = np.arange(0, nrecs ) 
+        recs = np.delete(recs, bid)
+
+        for rec in recs:
+            rec_x = crd.loc[rec].x
+            rec_y = crd.loc[rec].y
+
+            dist = np.sqrt( (base_x - rec_x)**2 + (base_y - rec_y)**2 )
+            distances[bid+1][rec+1] = dist
+
+    return distances
 
 
-        print(lat_min, lat_max, lon_min, lon_max)
+crd = pd.read_csv('coordinates_receivers_recnum.csv', sep='\t', header=None)
+crd.columns = ['rec', 'lat', 'x', 'y']
 
-        # create map using BASEMAP
-        self.m = Basemap(llcrnrlon=lon_min,
-                    llcrnrlat=lat_min,
-                    urcrnrlon=lon_max,
-                    urcrnrlat=lat_max,
-                    lat_0=(lat_max - lat_min)/2,
-                    lon_0=(lon_max-lon_min)/2,
-                    projection='merc',
-                    resolution = 'h',
-                    area_thresh=10000.,
-                    )
-        self.m.drawcoastlines()
-        self.m.drawcountries()
-        self.m.drawstates()
-        self.m.drawmapboundary(fill_color='#46bcec')
-        self.m.fillcontinents(color = 'white',lake_color='#46bcec')
-
-
-        self.m.drawparallels(np.arange(lat_min,lat_max,0.5),labels=[1,1,0,0])
-        self.m.drawmeridians(np.arange(lon_min,lon_max,0.8),labels=[0,0,0,1])
-        plt.title('Receivers location')
-
-    def draw(self):
-        for lo, la in zip(self.lon, self.lat):
-            lons, lats = self.m(lo, la)
-            self.m.scatter(lons, lats, marker = 'o', color='r', zorder=5)
-            plt.savefig("rec_on_map", dpi=96)
-            plt.show()
-
-geo = geo_plot()
-geo.draw()
-"""
-
-crd = np.genfromtxt('coordinates_receivers_recnum.csv')
-loaded = np.load('stack_manypairs_99_zz.npz')
+loaded = np.load('stack_manypairs_100_zz.npz')
 reclist=loaded['reclist']
 fpband=loaded['fpband']
 si=loaded['si'][0]
@@ -180,40 +199,41 @@ cclags=loaded['cclags']
 cookie=loaded['cookie']
 cclags=np.array(map(lambda x: float("%.2f" %x), cclags))
 
-distances, angles = stn_pair_distances(reclist)
-print(angles)
+del loaded
 
-angs = np.arange(0, 370, 30)
-egy = do_one_brec(cookie,reclist,5,distances, angles)
+# angles = recpair_angles(reclist)
+# distances = recpair_distances(reclist)
+
+# np.save('pairangles.npy', angles)
+# np.save('pairdistances.npy', distances)
+
+distances, angles = stn_pair_distances(reclist)
+
+angs = np.arange(5, 360, 10)
+egy = do_one_brec(cookie,reclist,10,distances, angles)
 
 master_snr = np.empty([len(reclist), len(angs)])
-for i in range(len(reclist)-1):
+for rec in range(len(reclist)):
     for j,ang in enumerate(angs):
-        avg_snr = egy.getsection_with_azm(i+1, ang)
-        master_snr[i][j] = avg_snr
+        avg_snr = egy.getsection_with_azm(rec+1, ang)
+        master_snr[rec][j] = avg_snr
+
+np.savetxt('snr_data_100.txt', master_snr, delimiter=',')
+  
+# egy.getsection_with_azm(288, 5)
 
 
-print(master_snr[288,:])
+#print(angs[5])
 
-np.savetxt('snr_data.txt', master_snr, delimiter=',')
+# rec_dir = {}
+# for rec in range(len(reclist)):
+#     rec_dir[rec+1] = {}
+#     for ang in angs:
+#         rec_dir[rec+1][ang] = egy.getsection_with_azm(rec+1, ang)
 
-"""
-fig = figure(figsize=(8,8))
-ax = fig.add_axes([0.1, 0.1, 0.8, 0.8], polar=True)
 
-N = len(angs)
-theta = np.arange(0.0, 2*np.pi, 2*np.pi/N)
-radii = [10]*N
-width = [np.pi/10]*N
-bars = ax.bar(theta, radii, width=width, bottom=0.0)
-for r,bar,snr in zip(radii, bars, master_snr[21]):
-    bar.set_alpha(0.5)
-    if snr == np.nan or snr == 0.0:
-        snr = 0
-        bar.set_alpha(0.0)
+# np.save('rec_rel.npy', rec_dir)
+#print(rec_dir)
+#egy.test_azm(3, 15)
 
-    bar.set_facecolor( cm.jet(snr))
-    
-
-show()
-"""
+#print(master_snr)
