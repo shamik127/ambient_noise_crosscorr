@@ -39,8 +39,11 @@ result$snr = snr_list
 result$radius = 0.7
 result <- within(result, radius[is.nan(snr)] <- 0.0)
 result <- within(result, snr[is.nan(snr)] <- 0.0)
+#result <- within(result, snr[snr < 1.0] <- 1.0)
+#result <- within(result, snr <- log(snr))
 
 result$startAngle <- rep(x[1:length(x)-1], each=1, times=rec_num)
 result$endAngle = rep(x[2:length(x)], each=1, times=rec_num)
 result
 write.table(result, '/home/shamik/Documents/Arjun/result_100.csv', col.names = FALSE)
+

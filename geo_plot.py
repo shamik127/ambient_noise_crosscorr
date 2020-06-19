@@ -12,15 +12,20 @@ from matplotlib.pyplot import figure, show, rc
 from mpl_toolkits.basemap import Basemap
 
 
-def snr(dt, cclags, ccmat, umin, umax):
+def snr(dt, cclags, ccmat, umin, umax, rel_recs):
 
     offsets = map(lambda x: x.stats.distance*1e-3, ccmat.traces)
+    
     rsd = np.array(offsets)
+    #print(rsd)
+    kernel = gaussian_kernel(rsd)
+    #print(kernel)
+
 
     tstart = rsd/umax
     tend = rsd/umin
 
-    posbr_tl = cclags[len(cclags)//2:]
+    posbr_tl = cclags[len(cclags)//2+1:]
     
     pb_iws = np.searchsorted(posbr_tl,tstart)
     pb_iwe = np.searchsorted(posbr_tl,tend)
@@ -36,11 +41,16 @@ def snr(dt, cclags, ccmat, umin, umax):
 
         egy_win_pb[tn] = np.mean(np.square(pbwin))
         cccopy[pb_iws[tn]:pb_iwe[tn]+1] = 0.0
-        egy_owin_pb[tn] = np.sum(np.square(cccopy))/( len(cccopy)- len(pbwin) )
+        egy_owin_pb[tn] = np.sum(np.square(cccopy))/( len(cccopy) - len(pbwin) )
+
+        snr_all[rec+1][ang][rel_recs[tn]] = egy_win_pb[tn]/egy_owin_pb[tn] * rsd[tn]/30 * kernel[tn]
 
     
+    snr_arr = egy_win_pb/egy_owin_pb
+    norm_snr = snr_arr * rsd * kernel
+
     #print(egy_win_pb/egy_owin_pb)
-    return np.mean(egy_win_pb/egy_owin_pb)
+    return np.mean(norm_snr)
 
 
 class do_one_brec:
@@ -70,20 +80,32 @@ class do_one_brec:
             sys.exit('Could not find the base receiver.')
 
         upperRecs = np.arange(self.cum_arr[bri], self.cum_arr[bri+1])
+
+        # print(upperRecs)
         
         lowerRecs = np.array([], dtype=np.int32)
         for i in range(0,bri):
             lowerRecs = np.insert(lowerRecs,0, (self.cum_arr[bri-(i+1)]+i))
 
-
+        #print(lowerRecs)
         
-
         # Base receiver angles with the upper receivers
         upperAngs = self.angles[upperRecs]
+        #upperAngs = upperAngs.astype('int32')
+        #print(upperAngs)
 
         # Base receiver angles with the lower receivers (the angles data contains angles corresponding to 
         # lower to upper receiver)
+        
         lowerAngs = self.angles[lowerRecs] + 180
+        #lowerAngs = lowerAngs.astype('int32')
+        #print(lowerAngs)
+
+        for i in range(len(lowerAngs)):
+            if (lowerAngs[i] > 360):
+                lowerAngs[i] = lowerAngs[i] - 360
+
+        #print(lowerAngs)
 
         # index positions in the angs array needed for the given angle
         upperAngIdsWithinBin = np.argwhere(np.abs(upperAngs-azm) < self.azbin/2.0).flatten()
@@ -92,15 +114,19 @@ class do_one_brec:
         upperRecsIdsWithinBin = upperRecs[upperAngIdsWithinBin]
         lowerRecsIdsWithinBin = lowerRecs[lowerAngIdsWithinBin]
 
-        #return np.append( (lowerAngIdsWithinBin + 1), (upperAngIdsWithinBin + (bri+2)) )
+        #print(lowerAngIdsWithinBin + 1)
+        #print(upperAngIdsWithinBin + (bri+2))
+        rel_recs = np.append( (lowerAngIdsWithinBin + 1), (upperAngIdsWithinBin + (bri+2)) )
+        # print(rel_recs)
+        #print('--------------------')
         
         ccml = self.ccm.shape[0]
         upperTrs = [oc.trace.Trace(data=self.ccm[ccml//2+1:,x], header={'distance': self.distances[x]}) for x in upperRecsIdsWithinBin]
-        lowerTrs = [oc.trace.Trace(data=np.flip(self.ccm[0:ccml//2-1,x]), header={'distance': self.distances[x]}) for x in lowerRecsIdsWithinBin]
+        lowerTrs = [oc.trace.Trace(data=np.flip(self.ccm)[ccml//2+1:,x], header={'distance': self.distances[x]}) for x in lowerRecsIdsWithinBin]
 
-        final_pnsep= oc.stream.Stream(traces=upperTrs) + oc.stream.Stream(traces=lowerTrs)
+        final_pnsep= oc.stream.Stream(traces=lowerTrs) + oc.stream.Stream(traces=upperTrs)
         #print(len(final_pnsep.traces))
-        egy = snr(si,cclags,final_pnsep,1.5,6.0)
+        egy = snr(si,cclags,final_pnsep,1.5,6.0, rel_recs)
         
         return egy
 
@@ -125,7 +151,10 @@ def stn_pair_distances(rlist):
             rec_y = crd.loc[rec].y
 
             dist = np.sqrt( (base_x - rec_x)**2 + (base_y - rec_y)**2 )
-            qang = np.arctan2(rec_y - base_y, rec_x - base_x)
+            if (angVert):
+                qang = np.arctan2(rec_x - base_x, rec_y - base_y)
+            else:
+                qang = np.arctan2(rec_y - base_y, rec_x - base_x)
             
             if (qang < 0.0):
                 qang += 2*np.pi
@@ -134,6 +163,9 @@ def stn_pair_distances(rlist):
     
             distances = np.append(distances, dist)
             angles = np.append(angles, rpazim_d)
+
+    np.save('distances_99_without.npy', distances)
+    np.save('angles_99_without.npy', angles)
 
     return distances, angles
 
@@ -188,52 +220,80 @@ def recpair_distances(rlist):
     return distances
 
 
-crd = pd.read_csv('coordinates_receivers_recnum.csv', sep='\t', header=None)
-crd.columns = ['rec', 'lat', 'x', 'y']
 
-loaded = np.load('stack_manypairs_100_zz.npz')
-reclist=loaded['reclist']
-fpband=loaded['fpband']
-si=loaded['si'][0]
-cclags=loaded['cclags']
-cookie=loaded['cookie']
-cclags=np.array(map(lambda x: float("%.2f" %x), cclags))
-
-del loaded
-
-# angles = recpair_angles(reclist)
-# distances = recpair_distances(reclist)
-
-# np.save('pairangles.npy', angles)
-# np.save('pairdistances.npy', distances)
-
-distances, angles = stn_pair_distances(reclist)
-
-angs = np.arange(5, 360, 10)
-egy = do_one_brec(cookie,reclist,10,distances, angles)
-
-master_snr = np.empty([len(reclist), len(angs)])
-for rec in range(len(reclist)):
-    for j,ang in enumerate(angs):
-        avg_snr = egy.getsection_with_azm(rec+1, ang)
-        master_snr[rec][j] = avg_snr
-
-np.savetxt('snr_data_100.txt', master_snr, delimiter=',')
-  
-# egy.getsection_with_azm(288, 5)
+def gaussian_kernel(x):
+    kernel = np.exp(-0.5 * (x**2) / np.square(10))
+    return kernel
 
 
-#print(angs[5])
+if __name__ == '__main__':
 
-# rec_dir = {}
-# for rec in range(len(reclist)):
-#     rec_dir[rec+1] = {}
-#     for ang in angs:
-#         rec_dir[rec+1][ang] = egy.getsection_with_azm(rec+1, ang)
+    nargs=len(sys.argv)
+    rec_input=raw_input("Enter a single receiver, or two receivers")
+
+    crd = pd.read_csv('coordinates_receivers_recnum.csv', sep='\t', header=None)
+    crd.columns = ['rec', 'lat', 'x', 'y']
+
+    angs = np.arange(5, 360, 10)
 
 
-# np.save('rec_rel.npy', rec_dir)
-#print(rec_dir)
-#egy.test_azm(3, 15)
+    for fn in range(1,nargs):
+        if not os.path.isfile(sys.argv[fn]):
+            sys.exit("File not found: %s" %(sys.argv[fn]))
+        print "Reading ", sys.argv[fn]
 
-#print(master_snr)
+        name=sys.argv[fn][0:-4]
+
+        loaded = np.load(sys.argv[fn])
+        reclist=loaded['reclist']
+        si=loaded['si'][0]
+        cclags=loaded['cclags']
+        cookie=loaded['cookie']
+        cclags=np.array(map(lambda x: float("%.2f" %x), cclags))
+
+        del loaded
+
+        rewrite = True
+        angVert = False
+
+        if (rewrite):
+            stn_pair_distances(reclist)
+
+        angles = np.load('angles_%s.npy' %(name))
+        distances = np.load('distances_%s.npy' %(name))
+
+        
+        egy = do_one_brec(cookie,reclist,10,distances, angles)
+
+        master_snr = np.empty([len(reclist), len(angs)])
+
+        snr_all = {}
+        for rec in range(len(reclist)):
+
+            snr_all[rec+1] = {}
+            for j,ang in enumerate(angs):
+                
+                snr_all[rec+1][ang] = {}
+                avg_snr = egy.getsection_with_azm(rec+1, ang)
+                master_snr[rec][j] = avg_snr
+
+        np.savetxt('snr_%s.txt' %(name), master_snr, delimiter=',')
+        #np.save('snr_all_99_without.npy', snr_all)  
+
+        # egy.getsection_with_azm(288, 5)
+
+
+        #print(angs[5])
+
+        # rec_dir = {}
+        # for rec in range(len(reclist)):
+        #     rec_dir[rec+1] = {}
+        #     for ang in angs:
+        #         rec_dir[rec+1][ang] = egy.getsection_with_azm(rec+1, ang)
+
+
+        # np.save('rec_rel.npy', rec_dir)
+        #print(rec_dir)
+        #egy.test_azm(3, 15)
+
+        #print(master_snr)

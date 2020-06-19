@@ -4,7 +4,7 @@
 
 infile=${1}
 
-outps="map_receiver_array_100.ps"
+outps="pieplots/map_receiver_array_100.ps"
 
 rm -r $outps
 
@@ -18,7 +18,7 @@ gmt psscale -Ctopo.cpt -Dx8c/1.5c+w8c/0.5c+jTC+h -Bxaf -By+lsnr -O -K >> $outps
 #gmt psimage n40_e020_1arc_v3.tif -Dx0/0+w1c+n5 -J -R -O -K >> $outps
 #gmt grdimage $grd -R -J -O -K -Cgrid.cpt   >> $outps
 
-gmt makecpt -Cjet -T0/15 -Z> topo.cpt
+gmt makecpt -Cjet -T0/70 -Z> topo.cpt
 
 n=`awk '{print}' $infile | grep -v 'X2' | wc -l`
 s=`seq 2 $n`
