@@ -5,18 +5,16 @@ import sys
 import numpy as np
 from collections import OrderedDict
 import obspy.core as oc
-from pandas import read_csv
+import pandas as pd
 #import scipy.signal as ss
 #import matplotlib.cm as cm
 #import matplotlib.pyplot as plt
 #from matplotlib.pyplot import figure, show, rc
 
-
 def snr(dt, cclags, ccmat, umin, umax, rel_recs):
 
     offsets = map(lambda x: x.stats.distance*1e-3, ccmat.traces)
-    rsd = np.array(offsets)
-    kernel = gaussian_kernel(rsd)    
+    rsd = np.array(offsets)   
     tstart = rsd/umax
     tend = rsd/umin
     posbr_tl = cclags[len(cclags)//2+1:]
@@ -36,6 +34,15 @@ def snr(dt, cclags, ccmat, umin, umax, rel_recs):
         egy_owin_pb[tn] = np.sum(np.square(cccopy))/( len(cccopy) - len(pbwin) )
         #snrall[rel_recs[tn]] = egy_win_pb[tn]/egy_owin_pb[tn] * rsd[tn]/30 * kernel[tn]
         snrall[rel_recs[tn]] = egy_win_pb[tn]/egy_owin_pb[tn]
+
+    if (gaussw):
+        kernel = gaussian_kernel(rsd,gaussw) 
+        for i,key in enumerate(snrall.keys()):
+            snrall[key] *= kernel[i]
+
+    if (linw):
+        for i,key in enumerate(snrall.keys()):
+            snrall[key] *= rsd[i]/30
 
     return snrall
 
@@ -107,6 +114,7 @@ class do_one_brec:
         self.avg_snr()
         print('\nDone!')
 
+
     def get_all_snr(self):
         return self.snrall
 
@@ -118,6 +126,19 @@ class do_one_brec:
                 avgsnrval=np.mean(self.snrall[rec][azm].values())
                 self.avgsnrdict[rec][azm]=avgsnrval
                 self.avgsnr[i][j]=avgsnrval
+
+        self.select_percentile()
+
+
+    def select_percentile(self):
+        num=np.nanpercentile(self.avgsnr, 90)
+        if not path.exists('percentile.npy'):
+            perc_dir={}
+        else:
+            perc_dir=np.load('percentile.npy', allow_pickle=True).item()
+
+        perc_dir[name]=num
+        np.save('percentile.npy', perc_dir)
         
 
     def get_avgsnrdict(self):
@@ -129,20 +150,47 @@ class do_one_brec:
 
 
     def save_files(self):
-        np.savetxt('%s/avgsnr.txt' %(name), self.avgsnr, delimiter=',')
-        np.save('%s/avgsnrdict.npy' %(name), self.avgsnrdict)
+        np.savetxt('Results/%s/avgsnr.txt' %(name), self.avgsnr, delimiter=',')
+        np.save('Results/%s/avgsnrdict.npy' %(name), self.avgsnrdict)
 
 
 
 ########################################################################
 # Helper functions
 ########################################################################
-def gaussian_kernel(x):
-    kernel = np.exp(-0.5 * (x**2) / np.square(10))
+def gaussian_kernel(x, sigma):
+    kernel = np.exp(-0.5 * (x**2) / np.square(sigma)) / (sigma*np.sqrt(2*np.pi))
     return kernel
 
+# https://stackoverflow.com/a/61151205
+
+def confirm_input(question, default="no"):
+
+    valid = {"yes": True, "y": True, "ye": True,
+             "no": False, "n": False}
+    if default is None:
+        prompt = " [y/n] "
+    elif default == "yes":
+        prompt = " [Y/n] "
+    elif default == "no":
+        prompt = " [y/N] "
+    else:
+        raise ValueError("invalid default answer: '{}}'".format(default))
+
+    while True:
+        print(question + prompt)
+        choice = raw_input().lower()
+        if default is not None and choice == '':
+            return valid[default]
+        elif choice in valid:
+            return valid[choice]
+        else:
+            print("Please respond with 'yes' or 'no' "
+                             "(or 'y' or 'n').\n")
+
+
 def stn_pair_distances(rlist):
-    crd = read_csv('coordinates_receivers_recnum.csv', sep='\t', header=None)
+    crd = pd.read_csv('coordinates_receivers_recnum.csv', sep='\t', header=None)
     crd.columns = ['rec', 'lat', 'x', 'y']
     nrecs = len(rlist)
     distances = np.array([])
@@ -170,8 +218,8 @@ def stn_pair_distances(rlist):
             distances = np.append(distances, dist)
             angles = np.append(angles, rpazim_d)
 
-    np.save('%s/distances.npy' %(name), distances)
-    np.save('%s/angles.npy' %(name), angles)
+    np.save('Results/%s/distances.npy' %(name), distances)
+    np.save('Results/%s/angles.npy' %(name), angles)
 
     #return distances, angles
 
@@ -181,8 +229,8 @@ def stn_pair_distances(rlist):
 ########################################################################
 if __name__ == '__main__':
 
-    rewrite = False
-    angVert = True
+    rewrite = True
+    angVert = False
 
     nargs=len(sys.argv)
     print("\n-----------------------------------------------------------------------------")
@@ -203,7 +251,15 @@ if __name__ == '__main__':
     else:
         azms = np.arange(azbin//2, 360, azbin)
 
-    
+    gaussw=None
+    if confirm_input("\nAdd gaussian weights? ", 'yes'):
+        gaussw=input('Enter the value of sigma: ')
+        gaussw=gaussw if gaussw else 10
+
+    linw=False
+    if confirm_input("\nAdd linear weights? ", 'yes'):
+        linw=True
+
 
     for fn in range(1,nargs):
         if not path.isfile(sys.argv[fn]):
@@ -211,8 +267,9 @@ if __name__ == '__main__':
         print "\nReading ", sys.argv[fn]
 
         name=sys.argv[fn][0:-4]
-        if not path.exists(name):
-            makedirs(name)
+        name=name if not gaussw else name+str(gaussw)
+        if not path.exists('Results/%s' %(name)):
+            makedirs('Results/%s' %(name))
 
         loaded = np.load(sys.argv[fn])
         reclist=loaded['reclist']
@@ -232,8 +289,8 @@ if __name__ == '__main__':
             stn_pair_distances(reclist)
 
         print "\nReading angles and distances.."
-        angles=np.load('%s/angles.npy' %(name))
-        distances=np.load('%s/distances.npy' %(name))
+        angles=np.load('Results/%s/angles.npy' %(name))
+        distances=np.load('Results/%s/distances.npy' %(name))
         print 'Done!\n'
 
         #########################################################################################
@@ -246,7 +303,9 @@ if __name__ == '__main__':
         rso = do_one_brec(cookie,rlist,azms,azbin)
         rso.save_files()
 
-        #print(rso.get_avgsnr())
-        
-        
-        #np.savetxt('snr_%s.txt' %(name), master_snr, delimiter=',')
+    def dict_to_csv(flname):
+        fl=np.load(flname, allow_pickle=True).item()
+        df=pd.DataFrame.from_dict(fl, orient='index')
+        df.to_csv('Results/percentile.csv')
+
+    dict_to_csv('percentile.npy')

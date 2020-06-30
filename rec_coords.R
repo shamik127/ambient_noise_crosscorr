@@ -1,7 +1,7 @@
 library(readr)
 library(data.table)
 library(dplyr)
-
+    
 rec_num = 150
 
 coordinates_rec_latlon_id_gcy <- read_delim("../coordinates_rec_latlon_id_gcy.csv", "\t", escape_double = FALSE, col_names = FALSE, trim_ws = TRUE)
@@ -28,7 +28,7 @@ result <- Result[rep(seq_len(nrow(Result)), each = length(x)-1), ]
 result
 
 # Dummy SNR data
-for (dr in dir()) {
+for (dr in dir(pattern = "stack")) {
   y <- read_csv(sprintf("%s/avgsnr.txt", dr), col_names = FALSE)
   y = y[rn,]
   
@@ -46,5 +46,6 @@ for (dr in dir()) {
   result$startAngle <- rep(x[1:length(x)-1], each=1, times=rec_num)
   result$endAngle = rep(x[2:length(x)], each=1, times=rec_num)
   result
+  print(max(result$snr))
   write.table(result, sprintf('%s/result.csv', dr), col.names = FALSE)
 }
